@@ -31,8 +31,15 @@ const LIB_NAME = 'libMyGame.so';
 // (빌드가 바뀌어도 offset보다 안정적).
 const REQUESTLOGIN_SYM = '_ZN16SystemPacketSend12RequestLoginEiRKSsS1_';
 const SENDLOGINBYPLATFORM_SYM = '_ZN10LobbyScene19SendLoginByPlatformEiRKSsS1_b';
+const GETMYCLIENTDATA_SYM = '_ZN6Common15GetMyClientDataEv';
 
-let armedOverwrite = null; // { text: string } | null
+// 분석 결과(mc4_account_theft_analysis.md 16~17장) RequestLogin의 type != 2 분기가
+// 실제로 서버에 보내는 유일한 유의미한 값은 s2가 아니라 이 오프셋 -- 계정 UID(unsigned int)로
+// 확인됨 (길드원 조회 키, JoinBattleRoyalDuo 매칭 요청 두 곳에서 독립적으로 교차검증).
+const CLIENTDATA_UID_OFFSET = 0x2124;
+
+let armedOverwrite = null;   // { text: string } | null  -- s2 in-place 치환 (레거시, 다른 미추적 분기용)
+let armedUidOverwrite = null; // number | null            -- +0x2124 UID 치환 (진짜 주입 지점, 17장)
 
 function hexdump(ptr, len) {
     try {
@@ -85,10 +92,39 @@ function main() {
     console.log(`[*] RequestLogin        @ ${requestLoginAddr}`);
     console.log(`[*] SendLoginByPlatform @ ${sendLoginByPlatformAddr}`);
 
+    // Common::GetMyClientData()를 후킹 -- 이게 실제 주입 지점(+0x2124 = 계정 UID).
+    // RequestLogin 자체는 UID를 인자로 받지 않고, 함수 내부에서 이걸 직접 호출해서 읽으므로
+    // 값을 바꾸려면 인자가 아니라 이 함수의 반환값이 가리키는 구조체를 패치해야 함.
+    const getMyClientDataAddr = Module.findExportByName(LIB_NAME, GETMYCLIENTDATA_SYM);
+    let lastClientDataPtr = null;
+    if (getMyClientDataAddr) {
+        Interceptor.attach(getMyClientDataAddr, {
+            onLeave(retval) {
+                lastClientDataPtr = retval;
+                if (armedUidOverwrite !== null) {
+                    const uidPtr = retval.add(CLIENTDATA_UID_OFFSET);
+                    const before = uidPtr.readU32();
+                    uidPtr.writeU32(armedUidOverwrite);
+                    console.log(`[UID INJECTED] GetMyClientData()+0x2124: ${before} -> ${armedUidOverwrite}`);
+                    armedUidOverwrite = null; // 1회성 -- 계속 덮어쓰면 다른 기능(듀오매칭 등)까지 오염됨
+                }
+            }
+        });
+    } else {
+        console.log('[!] GetMyClientData symbol not found -- armUidOverwrite will not work.');
+    }
+
     Interceptor.attach(requestLoginAddr, {
         onEnter(args) {
             const type = args[0].toInt32();
             console.log(`\n[RequestLogin] type=${type} (${type === 2 ? 'PLATFORM' : 'IDENTIFIER-ONLY, s1 is ignored by client code'})`);
+
+            if (lastClientDataPtr) {
+                const uid = lastClientDataPtr.add(CLIENTDATA_UID_OFFSET).readU32();
+                console.log(`  [UID field] GetMyClientData()+0x2124 = ${uid} (this is what actually identifies the account per mc4_account_theft_analysis.md 16장)`);
+            } else {
+                console.log('  [UID field] GetMyClientData() has not been observed yet this run -- value unknown.');
+            }
 
             const s1 = describeStdString(args[1], 's1');
             const s2 = describeStdString(args[2], 's2');
@@ -126,19 +162,26 @@ function main() {
     }
 
     console.log('[*] Hooks installed. Trigger the game\'s normal connect/login flow now and watch the log.');
-    console.log('[*] Once you see a real "type != 2" call with a sane s2, call rpc.exports.armOverwrite("<test-account-B-identifier>") and reconnect/retry to fire the injection on the NEXT such call.');
+    console.log('[*] Step 1 (observe only): just watch the [UID field] and s1/s2 logs on real RequestLogin calls.');
+    console.log('[*] Step 2 (inject, test accounts only): rpc.exports.armUidOverwrite(<test-account-B-uid>) then reconnect/retry -- this patches the REAL injection point (GetMyClientData()+0x2124), not s1/s2.');
+    console.log('[*] armOverwrite(text) for s2 is kept for other, still-untraced branches (see 14장/17장 of the analysis doc) -- in the traced auto-trigger path s2 is empty and unused, so armUidOverwrite is what actually matters there.');
 }
 
 rpc.exports = {
     status() {
-        return { armed: armedOverwrite };
+        return { armed: armedOverwrite, armedUid: armedUidOverwrite };
     },
     armOverwrite(text) {
         armedOverwrite = { text: String(text) };
-        console.log(`[*] Armed: next RequestLogin(type != 2) call will have s2 overwritten with "${text}" (if it fits in the original buffer).`);
+        console.log(`[*] Armed (legacy, s2): next RequestLogin(type != 2) call will have s2 overwritten with "${text}" (if it fits in the original buffer).`);
+    },
+    armUidOverwrite(uid) {
+        armedUidOverwrite = Number(uid) >>> 0;
+        console.log(`[*] Armed (real injection point): next Common::GetMyClientData() call will have +0x2124 overwritten with ${armedUidOverwrite}.`);
     },
     disarm() {
         armedOverwrite = null;
+        armedUidOverwrite = null;
         console.log('[*] Disarmed.');
     }
 };
