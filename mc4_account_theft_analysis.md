@@ -173,7 +173,48 @@ Ban/Unban/Sanction/Restrict/Blacklist 계열 심볼을 전수 검색했으나 �
 
 **범위 한계:** 이번 검색은 `libMyGame.so` 한 파일에 한정됩니다. 같이 배포된 다른 `.so`(안티치트 `libxigncode.so`, 광고/분석 SDK 등), APK의 Java/Kotlin(`classes.dex`) 영역, 그리고 서버 측 코드/DB 자체는 이번 검색 범위 밖입니다 — 특히 서버·DB 쪽 백도어 여부는 클라이언트 분석만으로는 원천적으로 확인할 수 없고 서버 코드 리뷰/내부 감사가 필요합니다.
 
-## 11. 남은 작업
+## 11. `gameparadiso` 키워드 재검색 + `222.112.0.210` 확인
+
+`libMyGame.so`(및 같이 배포된 다른 `.so` 전부)에서 `gameparadiso`를 대소문자 무시하고 재검색했고, `222.112.0.210`도 리터럴/바이트 단위로 검색했습니다. `libMyGame.so`에서만 히트가 있었고 나머지 `.so`에는 없었습니다:
+
+```
+gameparadiso.iptime.org
+pg@gameparadiso.com
+http://pl.gameparadiso.com:15667/gameparadiso_return
+Mail-Order Sales Report Number: 2017-Seoul Geumcheon-1106 Mail: angel@gameparadiso.com
+Copyright GameParadiso inc. all rights reserved
+https://play.google.com/store/apps/details?id=com.gameparadiso.milkchoco
+mc4.gameparadiso.com
+```
+
+`222.112.0.210`은 **바이너리 어디에도 리터럴로 존재하지 않습니다** (0건, raw byte 검색도 0건). 아마 사용자님이 별도로(DNS 조회 등) 확보하신 IP로 보이는데, 이 IP가 위 도메인 중 하나의 현재 resolve 결과라면 — 특히 `gameparadiso.iptime.org` — 짚고 넘어갈 부분이 있습니다.
+
+**주목할 점 — `gameparadiso.iptime.org`:** `iptime.org`는 한국 공유기 제조사(ipTIME)가 제공하는 **가정용/소호(SOHO) 공유기용 무료 DDNS 서비스**입니다. 상용 게임의 정식 서버가 이런 이름을 쓰는 경우는 거의 없고, 보통 사내 테스트/개발 서버를 사무실 또는 특정 직원 자리의 공유기 뒤에 놓고 외부에서 접근하려고 DDNS를 붙였을 때 나오는 패턴입니다. 즉:
+- 이게 지금도 살아있는 서버(버전체크/패치서버/테스트서버 등)라면, **가정/소호용 공유기 인프라가 게임 시스템의 일부로 노출되어 있다는 뜻**이라 회선 안정성·보안관리 수준이 정식 IDC/클라우드 서버보다 훨씬 낮을 가능성이 큽니다.
+- `http://pl.gameparadiso.com:15667/gameparadiso_return`는 **결제(Payment/PG로 추정) 콜백 URL인데 평문 HTTP**입니다. 결제 관련 콜백이 HTTPS가 아니라면 콜백 위변조(MITM) 위험이 있습니다.
+
+**여기서 멈춘 이유:** 이 문자열들이 실제로 지금도 운영 중인 인프라를 가리키는지, `222.112.0.210`이 정말 이 도메인들의 실제 IP인지는 **DNS 조회/포트스캔 등 실제 네트워크 조회가 있어야 확인 가능**한데, 이번 세션 범위(정적 분석)를 벗어나는 실제 네트워크 정찰 행위라 진행하지 않았습니다. 이 부분은 사내에서 직접 `nslookup gameparadiso.iptime.org`, `nslookup pl.gameparadiso.com` 등으로 확인하시고, 만약 저 도메인들이 실제로 운영 인프라와 연결되어 있다면 (1) 결제 콜백은 HTTPS로 전환, (2) 테스트/레거시 서버가 DDNS 뒤에서 여전히 프로덕션과 네트워크가 연결되어 있는지 점검하시길 권합니다.
+
+## 12. 로비의 다른 유저 세션을 조작해 클랜 가입수락·클랜마스터 위임을 원격으로 강제할 수 있는지
+
+`SystemPacketSend`의 클랜(길드) 관련 함수 40여 개를 확인했고, 특히 아래 두 개를 디스어셈블했습니다:
+
+- `ClanAcceptWaitingUserToJoin(unsigned int waitingUserId, unsigned int clanId)` @ `0x29393cc`
+- `ClanChangeMemberGrade(unsigned int memberId, unsigned char grade)` @ `0x293302c` (등급값에 "마스터"가 포함되는 구조라면 이게 곧 마스터 위임 함수로 추정됩니다 — 별도의 `ClanChangeMaster`/`TransferMaster` 함수는 존재하지 않았습니다.)
+
+두 함수 모두 디스어셈블 결과 **패킷에 담기는 건 대상 ID(uint)와 등급/사유 같은 파라미터뿐이고, "누가 이 요청을 보냈는지"(행위자/권한 증명)는 패킷 안에 전혀 없습니다.** 이건 사실 정상입니다 — 서버는 원래 "이 TCP 연결이 어느 계정으로 로그인된 세션인지"로 행위자를 판단하지, 패킷 내용으로 판단하지 않습니다.
+
+**결론적으로 질문에 대한 답은 "예, 가능하지만 별개의 새로운 취약점이 아니라 2~6장에서 다룬 로그인 취약점의 직접적인 결과물"입니다.** 구체적으로:
+
+1. 공격자가 (앞서 확인한 로그인 취약점으로) 클랜마스터인 피해자 계정으로 **새 세션을 열어 그 계정 행세**를 할 수 있게 되면,
+2. 그 순간부터는 서버 입장에서 그 연결이 곧 "피해자 자신"이므로, `ClanAcceptWaitingUserToJoin(공격자의 실제 계정ID, 클랜ID)`을 보내 공격자 자신을 그 클랜에 가입시키고,
+3. 이어서 `ClanChangeMemberGrade(공격자의 실제 계정ID, 마스터등급)`을 보내 클랜마스터를 공격자에게 넘기는 것이 기술적으로 가능합니다.
+
+**다만 이건 "피해자가 이미 접속해서 살아있는 세션에 몰래 끼어들어 명령을 대신 주입하는 것"과는 다릅니다.** 그건 완전히 다른, 훨씬 어려운 공격입니다(실제 진행 중인 TCP 연결을 가로채는 네트워크 레벨 세션 하이재킹 — 시퀀스 번호 예측, 같은 네트워크 경유 등 필요). 이번 분석에서 그런 하이재킹 가능성을 시사하는 근거는 전혀 발견하지 못했고, 확인하려면 완전히 다른 종류의(네트워크 프로토콜 레벨) 분석이 필요합니다.
+
+**실무적 의미:** 이 클랜 마스터 위임 시나리오는 로그인 취약점 하나로 계정 탈취, 치트 오남용, 신고 폭탄, 클랜 탈취까지 전부 파생된다는 걸 보여주는 사례입니다. 즉 **2~6장의 로그인 취약점(서버가 로그인 패킷의 식별자만으로 세션을 열어주는 문제)을 막는 게 이 모든 파생 시나리오를 한 번에 차단하는 근본 해법**입니다. 클랜 시스템 자체(`ClanChangeMemberGrade` 등)에 별도로 손볼 결함이 있는 건 아닙니다.
+
+## 13. 남은 작업
 
 - 위 2장 4번 서버 로그 교차 검증이 이번 분석에서 가장 중요한 다음 단계입니다 (클라이언트 분석만으로는 여기까지가 한계).
 - 9.4의 `ReportUser` 관련 서버 로직 확인도 동일한 우선순위로 필요합니다.
