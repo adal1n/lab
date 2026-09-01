@@ -334,9 +334,39 @@ s2    = ""   (이 트리거 경로에서는 끝까지 빈 문자열로 유지됨
 - `RequestLogin` 후킹의 `onEnter`에 `GetMyClientData()+0x2124`의 실시간 값을 같이 로깅하도록 보강 — `s1`/`s2`뿐 아니라 UID 필드도 매 호출마다 실측됩니다.
 - 기존 `armOverwrite`(s2 in-place 치환)는 14장에서 확인한 다른 미추적 분기(예: `UserDefault`에 저장값이 있는 재접속 케이스)에서 여전히 유효할 수 있어 그대로 유지했습니다.
 
-## 18. 남은 작업
+## 18. 무기/코스튬 장착·구매 오프셋 확인 — 같은 패턴이지만 성격은 다름
+
+사용자 요청으로 무기/코스튬 관련 패킷도 확인했습니다.
+
+### 18.1 확인한 함수
+
+| 함수 | 시그니처 | 서버 전송 내용 |
+|---|---|---|
+| `SystemPacketSend::Equip` (`0x293a2ec`) | `(unsigned char slotType, unsigned char slotIndex, unsigned short itemId)` | slotType+slotIndex+itemId를 raw로 그대로 전송 |
+| `SystemPacketSend::ReserveChangeEquip` (`0x293a1a0`) | `(unsigned char, unsigned char, unsigned short itemId)` | 위와 동일. 오프라인 모드(`Cloud::NetData::GetIsOffline()`)일 땐 서버 전송 대신 로컬 `SystemOfflinePacket::RespawnChangeEquip` 호출로 분기 — 싱글플레이라 서버 검증 대상이 아니므로 정상. |
+| `SystemPacketSend::ReserveChangeCostume` (`0x293a250`) | `(unsigned char, unsigned char, unsigned short* costumeIds[5])` | 코스튬 슬롯 5개의 아이템ID를 배열로 순회하며 각각 raw 전송 |
+| `SystemPacketSend::BuyItem` (`0x293a008`) | `(unsigned char, unsigned char, unsigned short itemId, unsigned char)` | itemId만 전송 — **가격/재화 정보는 패킷에 없음** |
+
+네 함수 전부 오피코드 + 파라미터만 담을 뿐, "이 아이템을 실제로 보유/구매했다"는 증빙은 어디에도 없습니다 — 지금까지 확인한 `RequestLogin`/`ReportUser`/`Clan*` 계열과 완전히 동일한 "클라이언트는 요청만, 검증은 서버 책임" 패턴입니다.
+
+### 18.2 로그인 취약점과의 중요한 차이
+
+로그인 케이스(`RequestLogin` type!=2)는 **서버가 검증할 수 있는 비밀값 자체가 설계상 존재하지 않는다**는 게 문제였습니다 — 구조적으로 확정적 결함입니다.
+
+반면 이 무기/코스튬 케이스는 성격이 다릅니다:
+- `BuyItem`이 가격을 안 보내는 건 오히려 **정상 설계일 가능성이 높습니다** — 서버가 자체 아이템 테이블에서 가격을 조회해 재화를 차감하는 구조(클라이언트가 가격을 부르지 않는 방식)라면 이게 맞는 패턴입니다.
+- `Equip`/`ReserveChangeEquip`/`ReserveChangeCostume`도 마찬가지로, **서버가 자체 인벤토리 DB와 대조해서 "이 계정이 진짜 이 아이템을 보유하는지" 검증하는 구조라면 문제없는 정상 설계**입니다.
+
+**즉 로그인처럼 "구조적으로 무조건 뚫린다"고 확정할 수 없고, 전적으로 "서버가 인벤토리 소유권을 실제로 대조하는지"에 달려 있습니다.** 이 역시 클라이언트만으로는 확인 불가능한 서버 쪽 질문입니다.
+
+### 18.3 실무적 우선순위
+
+로그인 취약점(1~17장)이 실제로 통한다면 계정 자체를 통째로 훔칠 수 있으므로, 그 계정이 진짜 보유한 아이템도 그대로 다 쓸 수 있습니다. 따라서 이 무기/코스튬 검증 견고성은 로그인 취약점 대비 **상대적으로 부차적인 문제**입니다 — 다만 로그인 문제와 별개로 존재하는 **완전히 독립적인 추가 취약점 후보**이므로(로그인 취약점이 없더라도 이것만으로 미보유 아이템을 무료로 장착할 수 있다면 그 자체로 별도 사고), 서버팀 확인 목록에 별도 항목으로 추가합니다.
+
+## 19. 남은 작업
 
 - 13.3 + 14장 + 16장의 서버팀 확인 사항이 지금까지 나온 모든 항목 중 **가장 우선순위가 높습니다** — 결과에 따라 이번 사고의 실제 규모(특정 피해자 1명 vs 전체 이용자)가 갈립니다.
 - 위 2장 4번 서버 로그 교차 검증이 이번 분석에서 두 번째로 중요한 다음 단계입니다 (클라이언트 분석만으로는 여기까지가 한계).
 - 9.4의 `ReportUser` 관련 서버 로직 확인도 동일한 우선순위로 필요합니다.
+- 18장의 `Equip`/`ReserveChangeEquip`/`ReserveChangeCostume`/`BuyItem`에 대해 서버가 인벤토리 소유권·가격을 실제로 대조하는지 확인 필요 (로그인 취약점과는 별개의 독립적인 확인 항목).
 - 17.3-A(순수 관찰)부터 먼저 실행해서 UID 가설과 트리거 조건을 실측으로 확정하고, 그 다음에만 17.3-B(위조 재현)로 넘어가는 순서를 권장합니다.
