@@ -453,3 +453,11 @@ s2    = ""   (이 트리거 경로에서는 끝까지 빈 문자열로 유지됨
 - 9.4 + 23.4 `ReportUser`/`ReportHackingUser` 상호작용 검증 여부.
 - 18장 + 23.3 `Equip`/`ReserveChangeEquip`/`ReserveChangeCostume`/`RequestSendGiftEquipItem` 등 인벤토리 소유권 검증 여부.
 - 2장 4번 서버 로그 교차 검증.
+
+## 25. 추가 스윕 — `TestDeleteAccount` 수준의 다른 이상 징후는 없음
+
+23장 이후 사용자 요청으로 두 방향을 추가로 훑었습니다: (1) `RequestBattleRoyalReward()`/`RequestLeagueMatchSeasonReward()`/`PickUpKillDropEventCoin`/`FriendSlotExpand`/`SendReqPassReward` 등 남은 보상·재화 청구 계열 함수, (2) `SystemPacketSend` 밖까지 포함한 전체 코드베이스의 `Test`/`Force`/`Debug`/`GM`/`Dev` 이름 패턴.
+
+결과: (1)은 전부 인자 없이 "청구만 요청, 자격 판단은 서버 몫"인 정상적인 설계 패턴이라 18/23.3장에 이미 정리한 것과 같은 범주이고 개별 이슈로 추가하지 않았습니다. (2)는 물리엔진(`bt*`, `PU*`) 내부 함수와 평범한 UI 로컬 헬퍼(`ForceSelectFriend` 등)뿐이었고, `TestDeleteAccount`처럼 "이름이 테스트/디버그용이면서 파괴적 동작을 인자 없이 수행하는" 조합은 더 발견되지 않았습니다.
+
+**결론: 클라이언트 정적 분석으로 확보 가능한 새로운 발견은 23장에서 사실상 소진되었습니다.** 이후 우선순위는 24장에 정리된 서버 확인 사항(특히 `TestDeleteAccount` 화이트리스트 적용 여부)으로 전부 이관됩니다.
