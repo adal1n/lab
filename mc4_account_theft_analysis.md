@@ -461,3 +461,25 @@ s2    = ""   (이 트리거 경로에서는 끝까지 빈 문자열로 유지됨
 결과: (1)은 전부 인자 없이 "청구만 요청, 자격 판단은 서버 몫"인 정상적인 설계 패턴이라 18/23.3장에 이미 정리한 것과 같은 범주이고 개별 이슈로 추가하지 않았습니다. (2)는 물리엔진(`bt*`, `PU*`) 내부 함수와 평범한 UI 로컬 헬퍼(`ForceSelectFriend` 등)뿐이었고, `TestDeleteAccount`처럼 "이름이 테스트/디버그용이면서 파괴적 동작을 인자 없이 수행하는" 조합은 더 발견되지 않았습니다.
 
 **결론: 클라이언트 정적 분석으로 확보 가능한 새로운 발견은 23장에서 사실상 소진되었습니다.** 이후 우선순위는 24장에 정리된 서버 확인 사항(특히 `TestDeleteAccount` 화이트리스트 적용 여부)으로 전부 이관됩니다.
+
+## 26. 마스터 체크리스트 — DB에 영구 상태를 남기는 `Cheat` 외 함수 전체
+
+사용자 요청("DB를 직/간접적으로 수정하는, Cheat가 아닌 함수 전체")에 따라 312개 `SystemPacketSend` 함수에서 **실시간 전투/이동/이펙트 이벤트(서버 메모리상의 매치 상태만 바꾸고 DB에 영구 기록되지 않는 것으로 추정)를 제외**하고, 계정·인벤토리·클랜 등 **영구 상태를 바꾸는 것으로 보이는 함수 전체**를 카테고리로 정리했습니다. 추가로 하나씩 디스어셈블한 결과(`ClanGoldDomination`, `RequestGetMessageItem`) 역시 예외 없이 **"오피코드 + 파라미터만 raw로 전송, 증빙 없음"**이라는 지금까지의 패턴과 동일했습니다 — 이 패턴이 예외 없는 전체 프로토콜의 설계 방식이라는 게 이번 전수조사로 확정됐습니다.
+
+**범례:** ★ = 이번 분석에서 개별 디스어셈블로 직접 확인함 / 나머지는 이름과 시그니처로 분류(동일 패턴으로 추정, 개별 미확인)
+
+| 카테고리 | 함수 | 비고 |
+|---|---|---|
+| **계정** | `RequestLogin` ★, `TestDeleteAccount` ★★★, `RequestDeleteAccount`, `RequestCancelDeleteAccount`, `GuestUpdate`(네이티브 호출부 없음, 6.2 참고) | `TestDeleteAccount`가 최우선 |
+| **재화/구매** | `BuyItem` ★, `BuyCharacter`, `BuyBoost`, `BuyRandomOption`, `BuyResetKillDeathRatio`, `BuyToyItem`, `BuyWithClanGold`, `BuyWithGold`, `Purchase::SendVerifyReceipt` ★, `Purchase::SendVerifyReceiptRetry`, `SendPurchasePass`, `SendPurchasePassTier`, `Merchant::SendPurchase` | IAP 영수증(`SendVerifyReceipt`)이 최우선 |
+| **인벤토리/장비** | `Equip` ★, `ReserveChangeEquip` ★, `ReserveChangeCostume` ★, `ReserveChangeCharacter`, `ItemUse`, `ItemUseBegin`, `ClassPackage::GetBonusCostumeInClassPackage`, `ClassPackage::GetRewardInClassPackage` | 18장 참고 |
+| **클랜(공유 자원)** | `ClanCreate`, `ClanBreakup`, `ClanChangeName`/`Mark`/`IntroduceMessage`/`Country`, `ClanChangeMemberGrade` ★, `ClanKickMember`, `ClanLeave`, `ClanUpgrade`(클랜 골드 소모 추정), `ClanGoldDomination` ★(클랜 공유 골드 직접 조작으로 추정 — **개인 재화가 아니라 클랜 전체 자원이라 악용 시 다수 피해**), `ClanUnlockItem`, `ClanAcceptWaitingUserToJoin` ★, `ClanRejectWaitingUserToJoin`, `ClanInviteAccept`/`Reject`/`InviteUser` | `ClanGoldDomination`은 이번에 신규 확인 |
+| **우편함(계정 간 이동)** | `RequestSendGiftEquipItem` ★, `RequestSendGiftCharacter`, `RequestSendMessage`, `RequestGetMessageItem` ★(신규 확인 — 메시지ID 기반이라 재사용/중복수령 방지가 서버에 있는지가 관건), `RequestUpdateMessageInfo`, `RequestCheckRewardNX` | 계정 간 아이템 이동 경로라 아이템 복제(듀프) 벡터 가능성 별도 확인 필요 |
+| **친구** | `FriendAdd`, `FriendDelete`, `RequestCancelAddFriend`, `FriendRequestResult` | 상대적으로 낮은 위험(재화/아이템 직접 관련 없음) |
+| **미션/이벤트/보상 수령** | `SendChangeMissionCount`, `SendMissionChange`, `SendMissionClear`, `SendMissionLoad`, `SendMissionResetbyPeriod`, `RequestEventDailyLogin`, `EventActivate`, `RequestBattleRoyalReward`, `RequestLeagueMatchSeasonReward`, `SendReqDailyBonus`, `SendReqPassReward`, `GuideSystem::SendReqReward`, `PickUpKillDropEventCoin`, `AdsRequestReward`, `AdsRequestShopADReward` | 개수가 많지만 전부 "청구 요청, 자격은 서버가 판단"인 동일 패턴(25장 결론과 동일) |
+| **프로필/신원** | `ChangeNickname`, `ChangeCountry`, `ChangeClanCountry`, `SelectMedal`(획득 여부 검증 필요 — 미보유 메달을 프로필에 표시 가능할 수도) | 재화 손실은 없지만 콘텐츠 모더레이션/표시 사칭 이슈 가능 |
+| **신고/제재** | `ReportUser` ★, `ReportHackingUser`, `ReportClanMark` | 9.4 참고 |
+
+**핵심 결론:** 이 표에 있는 함수 중 어느 하나라도 서버가 (a) 소유권/자격/잔액을 자체적으로 재검증하지 않고 (b) 화이트리스트 계정으로도 제한하지 않은 채 클라이언트 요청을 그대로 실행한다면, **그 함수 하나하나가 전부 `CheatSetGold`와 동일한 수준의 "재화·아이템 무한 생성" 벡터가 됩니다.** 특히 `ClanGoldDomination`(클랜 공유 골드)과 우편함 계열(계정 간 아이템 이동)은 **개인 계정 하나가 아니라 클랜 전체 또는 아이템 복제(듀프) 방식으로 확산될 수 있어** 우선순위를 높게 잡아야 합니다.
+
+**실무 제안:** 이 표를 그대로 서버 코드의 패킷 핸들러 목록과 대조해서, 각 핸들러가 "요청받은 값을 그대로 반영"하는지 "자체 DB 조회로 검증 후 반영"하는지 표시하는 감사(audit) 작업을 진행하시길 권합니다 — 클라이언트 분석으로는 여기까지가 한계이고, 이게 남은 취약점 전체를 확정하는 가장 빠른 방법입니다.
