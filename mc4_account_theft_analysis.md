@@ -397,3 +397,22 @@ s2    = ""   (이 트리거 경로에서는 끝까지 빈 문자열로 유지됨
 `SystemOfflinePacket`(오프라인/봇전 서브시스템)의 전체 멤버 함수(약 80개)를 나열해봤습니다. 전부 `ShootStart`, `HitUser`, `EntityCreate`, 각종 버프/데미지 계산, `Respawn` 등 **한 판의 전투 로직을 로컬로 시뮬레이션하는 함수들뿐이고, 골드/재화/구매 관련 함수는 단 하나도 없습니다.** `SystemOfflinePacket::RespawnChangeEquip`가 있긴 하지만, 이미 보유한 장비 중 리스폰 시 무엇을 착용할지 로컬 처리하는 것뿐이며 새 아이템을 생성하거나 재화를 증감시키지 않습니다.
 
 **결론:** 재화 증감(`Cheat*` 계열), 구매(`BuyItem`, `Purchase::SendVerifyReceipt`), 장비/코스튬 변경 요청은 전부 `SystemPacketSend`(온라인 전용, TCP 연결 필수)에만 존재하며, 오프라인 서브시스템에는 대응 기능이 없습니다. 오프라인 모드는 순수 전투 시뮬레이터 용도로 격리되어 있고, 여기서 만들어진 결과가 온라인 계정 재화/인벤토리로 동기화되는 경로 자체가 확인되지 않았습니다. **로그인·치트 오피코드·신고 기능처럼 "서버가 클라이언트를 과신해서 생기는" 유형의 결함은 여러 건 확인됐지만, "서버를 아예 거치지 않고 클라이언트 혼자 재화/구매를 처리"하는 구조는 이번 코드베이스에서 발견되지 않았습니다.** (오히려 이 부분은 설계가 적절하다고 평가합니다.)
+
+## 22. 나머지 `.so` 전체 인벤토리 — mc4 고유 취약점은 `libMyGame.so` 하나에서만 발견됨
+
+사용자가 "10년 된 게임인데 취약점이 터무니없이 많은 것 같다"고 우려해서, 배포판에 같이 들어있는 나머지 `.so` 11개를 전부 훑었습니다 (`nm -D`로 익스포트 심볼 확인 + 문자열 검색).
+
+| 라이브러리 | 정체 | mc4 고유 취약점 |
+|---|---|---|
+| `libMyGame.so` | mc4 게임 로직 본체 | **있음 (2~21장 전체)** |
+| `libxigncode.so` | WellBia XIGNCODE3 (상용 안티치트) | 문자열/심볼이 거의 안 보일 정도로 제대로 하드닝됨 — 추가 분석은 언패킹 등 훨씬 전문적인 작업 필요하고, 설령 결함이 나와도 mc4가 아니라 WellBia 제품 자체의 문제라 범위 밖 |
+| `libapminsighta.so` / `libapminsightb.so` | 크래시리포팅 SDK + **7-Zip LZMA SDK**(`Lzma2Dec_*`, `Crc64*`, `Delta_*` 등 심볼로 확인) | 없음 — 공개 오픈소스 |
+| `libdatastore_shared_counter.so` | 구글 **AndroidX Jetpack DataStore**(`datastore::CreateSharedCounter` 등) | 없음 — 공개 오픈소스(AOSP) |
+| `libbuffer_pgl.so` / `libfile_lock_pgl.so` / `libpglarmor.so` / `libtobEmbedPagEncrypt.so` | **ByteDance Pangle 광고 SDK** 내부 유틸("pgl"=Pangle, `com.bykv.vk.openvk.preload.geckox.*`, `com.bytedance.sdk.component.*` 패키지명으로 확인) | 없음 — 서드파티 광고 SDK |
+| `libtt_ugen_layout.so` | **Facebook Yoga** 레이아웃 엔진의 ByteDance 포크(`YGConfigNew` 등 Yoga 고유 API) | 없음 — 공개 오픈소스 |
+| `libapplovin-native-crash-reporter.so` | AppLovin 광고 SDK 크래시 리포터 | 미확인(서드파티 광고 SDK, 우선순위 낮음) |
+| `libpickle.so` | 익스포트가 거의 없는 스텁 | 확인 불가 |
+
+**결론:** 이번 분석에서 확보한 모든 네이티브 라이브러리를 통틀어, mc4 고유의 취약점은 전부 `libMyGame.so` 하나에서만 나왔습니다. 나머지는 공개 오픈소스이거나 잘 알려진 서드파티 SDK 내부 코드(이미 공개된 구현이라 별도 취약점 여지가 적음), 혹은 제대로 하드닝된 상용 안티치트 제품(추가 분석이 범위 밖)입니다. **"취약점이 터무니없이 많다"는 인상은 실제로는 "여러 라이브러리에 걸친 다수의 결함"이 아니라 "`libMyGame.so`(자체 게임 서버 프로토콜) 안의 근본 원인 하나(로그인 시 서버가 클라이언트 신원 주장을 과신)에서 파생된 여러 시나리오"로 정리됩니다.**
+
+이 시점에서 클라이언트 바이너리 정적 분석으로 확보할 수 있는 정보는 사실상 소진됐습니다. 다음 단계는 전부 서버 쪽 확인(문서 곳곳의 "서버팀 확인 사항")에 달려 있습니다.
