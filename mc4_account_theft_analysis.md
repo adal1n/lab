@@ -370,3 +370,22 @@ s2    = ""   (이 트리거 경로에서는 끝까지 빈 문자열로 유지됨
 - 9.4의 `ReportUser` 관련 서버 로직 확인도 동일한 우선순위로 필요합니다.
 - 18장의 `Equip`/`ReserveChangeEquip`/`ReserveChangeCostume`/`BuyItem`에 대해 서버가 인벤토리 소유권·가격을 실제로 대조하는지 확인 필요 (로그인 취약점과는 별개의 독립적인 확인 항목).
 - 17.3-A(순수 관찰)부터 먼저 실행해서 UID 가설과 트리거 조건을 실측으로 확정하고, 그 다음에만 17.3-B(위조 재현)로 넘어가는 순서를 권장합니다.
+
+## 20. `UserInfor` 구조체 — 무기/코스튬 필드 오프셋
+
+18장이 패킷 함수(장착 "요청") 쪽이었다면, 이번엔 사용자 요청으로 실제 값이 **메모리 어디에 저장되는지**(오프셋)를 직접 확인했습니다. 장착 관련 함수들이 공통으로 받는 `UserInfor` 구조체를 디스어셈블해서 나온 결과입니다.
+
+| 오프셋 | 타입 | 내용 | 근거 |
+|---|---|---|---|
+| `+0x2e` | `unsigned char` | 현재 선택된 무기 슬롯(0 또는 1) | `SystemPacketSend::ChangeWeapon`(`0x29363b4`)이 이 바이트를 그대로 전송. `UtilWeapon::GetEquipped()`(`0x2979148`)도 이 값(0/1, 그 외는 기본 무기로 폴백)으로 분기 |
+| `+0xf68` | `void*` (8바이트) | 무기 슬롯 0의 `StWeaponData*` 포인터 | `UtilWeapon::GetEquipped()`: `*(UserInfor + slot*8 + 0xf68)` |
+| `+0xf70` | `void*` (8바이트) | 무기 슬롯 1의 `StWeaponData*` 포인터 | 위와 동일 (slot=1일 때 계산되는 주소) |
+| `+0xf36` | `unsigned short` | 코스튬 슬롯 0 아이템ID | `TownScene::ReSpawnCostume(UserInfor*, unsigned short*)`(`0x26ddbd4`)가 입력 배열의 `costumeIds[0]`을 그대로 여기 씀 |
+| `+0xf38` | `unsigned short` | 코스튬 슬롯 1 아이템ID | `costumeIds[1]` |
+| `+0xf3a` | `unsigned short` | 코스튬 슬롯 2 아이템ID | `costumeIds[2]` |
+| `+0xf3c` | `unsigned short` | 코스튬 슬롯 3 아이템ID | `costumeIds[3]` |
+| `+0xf3e` | `unsigned short` | 코스튬 슬롯 4 아이템ID | `costumeIds[4]` — 5슬롯 × 2바이트 = 정확히 10바이트 연속, `ReserveChangeCostume(byte, byte, unsigned short[5])`(18장)의 배열과 1:1 대응 |
+| `+0x518` | `Sprite3D*` (8바이트) | 캐릭터 3D 모델 렌더 캐시 포인터 (아이템ID 아님) | `GameScene::UpdateCostumeSpr(UserInfor*)`(`0x2700954`) |
+| `+0xb5` | `unsigned char` | 캐릭터/모드 타입 플래그로 추정(고정 상수와 비교됨, 정확한 의미는 미상) | `SystemPacketSend::HitUser`, `GameScene::UpdateCostumeSpr` 양쪽에서 같은 오프셋 참조 |
+
+**보안적 함의는 제한적입니다.** `UserInfor`는 전투 중 실시간 캐릭터 상태를 담는 구조체로, 서버가 게임 상태 패킷으로 계속 동기화해주는 캐시 성격이 강합니다. 이 필드들을 로컬에서 직접 조작해도 대부분 **본인 클라이언트 화면에만 일시적으로 반영되는 시각적 효과**에 그칠 가능성이 높고(서버가 다음 상태 동기화 때 덮어씀), 실제 소유/장착 상태를 서버 DB에 반영하려면 여전히 `ReserveChangeCostume`/`Equip` 패킷을 통해 서버 승인을 받아야 합니다(18장 참고 — 그 경로의 서버 검증 여부는 별도 확인 필요). 다만 만약 다른 플레이어에게 보여지는 표시(로비/필드에서 남에게 보이는 외형)가 이 로컬 값을 그대로 신뢰해서 렌더링된다면, 미보유 코스튬을 "남에게만 보이게" 사칭하는 정도의 제한적 시각 스푸핑 가능성은 남아있습니다 — 이 부분은 실측(Frida로 이 오프셋을 직접 바꿔보고 타인 화면에 반영되는지 관찰) 없이는 확정할 수 없습니다.
